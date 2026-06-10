@@ -15,7 +15,7 @@
 import { spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, writeFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
-import { firstRun } from "./firstrun.mjs";
+import { firstRun, importDump } from "./firstrun.mjs";
 import { startRestProxy } from "./restProxy.mjs";
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -66,6 +66,27 @@ export async function startSuite(opts) {
     //    `pg` client == the postgres readiness gate (zonky ships no pg_isready/psql).
     const { secrets } = await firstRun({ host: "127.0.0.1", port: ports.pg, db: "postgres", superUser: "postgres", superPass, migrationsDir, dataDir });
 
+    // 2b. gotrue (static Go binary) — the password authority for real accounts.
+    //     Runs its own migrations into the auth schema; shares the JWT secret with
+    //     postgrest + the gateway so tokens validate everywhere. Autoconfirm = no SMTP.
+    const gotrue = spawn(bin.gotrue, [], { stdio: "ignore", env: { ...process.env,
+      GOTRUE_API_HOST: "127.0.0.1", GOTRUE_API_PORT: String(ports.gotrue),
+      GOTRUE_DB_DRIVER: "postgres",
+      GOTRUE_DB_DATABASE_URL: `postgres://postgres:${superPass}@127.0.0.1:${ports.pg}/postgres?search_path=auth`,
+      GOTRUE_DB_MIGRATIONS_PATH: bin.gotrueMigrations,
+      GOTRUE_JWT_SECRET: secrets.jwtSecret, GOTRUE_JWT_AUD: "authenticated",
+      GOTRUE_JWT_DEFAULT_GROUP_NAME: "authenticated", GOTRUE_JWT_EXP: "3600",
+      GOTRUE_SITE_URL: appUrl, API_EXTERNAL_URL: `http://127.0.0.1:${ports.restProxy}/auth/v1`,
+      GOTRUE_MAILER_AUTOCONFIRM: "true", GOTRUE_EXTERNAL_EMAIL_ENABLED: "true",
+      GOTRUE_DISABLE_SIGNUP: "false", GOTRUE_LOG_LEVEL: "warn" } });
+    children.push({ name: "gotrue", child: gotrue });
+    await waitUntil("gotrue", () => httpOk(`http://127.0.0.1:${ports.gotrue}/health`), { tries: 90 });
+
+    // 2c. One-time account/data import (now that gotrue owns auth.users).
+    if (await importDump({ host: "127.0.0.1", port: ports.pg, db: "postgres", superUser: "postgres", superPass, dataDir })) {
+      console.log("[supervisor] imported account + data dump");
+    }
+
     // 3. PostgREST (connects as authenticator; JWT-gated) — proven path
     const rest = spawn(bin.postgrest, [], { stdio: "ignore", env: { ...process.env,
       PGRST_DB_URI: `postgres://authenticator:${secrets.authenticatorPassword}@127.0.0.1:${ports.pg}/postgres`,
@@ -74,8 +95,12 @@ export async function startSuite(opts) {
     children.push({ name: "postgrest", child: rest });
     await waitUntil("postgrest", () => httpOk(`http://127.0.0.1:${ports.postgrest}/osionos_workspaces`, { headers: { Authorization: "Bearer probe" } }));
 
-    // 4. /rest/v1 rewrite shim in front of PostgREST (keeps the bridge unchanged)
-    const proxy = await startRestProxy({ listenPort: ports.restProxy, postgrestUrl: `http://127.0.0.1:${ports.postgrest}` });
+    // 4. Kong-style routing shim: /rest/v1->postgrest, /auth/v1->gotrue (the gateway
+    //    + bridge speak to one base URL with Kong's path conventions).
+    const proxy = await startRestProxy({ listenPort: ports.restProxy, routes: [
+      { prefix: "/rest/v1", target: `http://127.0.0.1:${ports.postgrest}` },
+      { prefix: "/auth/v1", target: `http://127.0.0.1:${ports.gotrue}` },
+    ] });
     children.push({ name: "rest-proxy", child: { kill: () => proxy.close() } });
 
     // 5. auth-gateway — a Node script (extracted from the prismatica image:
@@ -114,4 +139,4 @@ export async function startSuite(opts) {
   }
 }
 
-export const DEFAULT_PORTS = { pg: 54329, postgrest: 33001, restProxy: 4010, gateway: 8788, bridge: 4000 };
+export const DEFAULT_PORTS = { pg: 54329, gotrue: 9998, postgrest: 33001, restProxy: 4010, gateway: 8788, bridge: 4000 };
