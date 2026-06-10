@@ -1,22 +1,23 @@
 /* ************************************************************************** */
 /*                                                                            */
 /*                                                        :::      ::::::::   */
-/*   policies.module.ts                                 :+:      :+:    :+:   */
+/*   bundles.module.ts                                  :+:      :+:    :+:   */
 /*                                                    +:+ +:+         +:+     */
 /*   By: dlesieur <dlesieur@student.42.fr>          +#+  +:+       +#+        */
 /*                                                +#+#+#+#+#+   +#+           */
-/*   Created: 2026/05/18 21:19:16 by dlesieur          #+#    #+#             */
-/*   Updated: 2026/05/18 21:19:16 by dlesieur         ###   ########.fr       */
+/*   Created: 2026/06/10 12:00:00 by dlesieur          #+#    #+#             */
+/*   Updated: 2026/06/10 12:00:00 by dlesieur         ###   ########.fr       */
 /*                                                                            */
 /* ************************************************************************** */
 
 import { Module } from '@nestjs/common';
-import { PoliciesController } from './policies.controller';
-import { PoliciesService } from './policies.service';
+import { PoliciesModule } from '../policies/policies.module';
+import { BundlesController } from './bundles.controller';
+import { BundlesService } from './bundles.service';
 
 @Module({
-  controllers: [PoliciesController],
-  providers: [PoliciesService],
-  exports: [PoliciesService],
+  imports: [PoliciesModule],
+  controllers: [BundlesController],
+  providers: [BundlesService],
 })
-export class PoliciesModule {}
+export class BundlesModule {}
